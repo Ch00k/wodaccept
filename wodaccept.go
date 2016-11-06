@@ -9,6 +9,7 @@ import (
 	"mime/quotedprintable"
 	"net/http"
 	"net/mail"
+	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -20,8 +21,6 @@ import (
 )
 
 const (
-	watchDir = "/Users/ay/tmp/wodify"
-
 	brokenLineRegexp = `.*=[^3D].*`
 	subjRegexp       = `The .* class is open for reservation`
 	urlRegexp        = `.*(http://mandrillapp.*)">Accept.*`
@@ -155,6 +154,7 @@ func parseHTML(body string) {
 }
 
 func main() {
+	watchDir := os.Args[1]
 	w := watcher.New()
 
 	go func() {
