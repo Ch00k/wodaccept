@@ -26,8 +26,8 @@ const (
 	urlRegexp        = `.*(http://mandrillapp.*)">Accept.*`
 	classInfoRegexp  = `Date:\xa0+(\d{2}), (.*) (\d{4})Start time:\xa0+(.*) at (.*)End.*Program:\xa0+(.*)Location.*`
 
-	title   = "//div[@id='W_Theme_UI_wt12_block_wtTitle']"
-	content = "//div[@id='W_Theme_UI_wt12_block_wtMainContent']"
+	title   = "//div[@id='AthleteTheme_wt12_block_wtTitle']"
+	content = "//div[@id='AthleteTheme_wt12_block_wtMainContent']"
 )
 
 func checkSubject(h mail.Header) (bool, error) {
@@ -164,8 +164,10 @@ func main() {
 				if event.Op != watcher.Create {
 					continue
 				}
+				log.Println(event.Name())
 				filePath := path.Join(watchDir, event.Name())
 				url := readEmail(filePath)
+				log.Println(url)
 				body := fetchURL(url)
 				parseHTML(body)
 			case err := <-w.Error:
