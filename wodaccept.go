@@ -42,8 +42,8 @@ type class struct {
 }
 
 type reservationResult struct {
-	status, url string
-	class       class
+	status string
+	class  class
 }
 
 func readMessage(f string) (*mail.Message, error) {
@@ -127,7 +127,7 @@ func acceptReservation(url string) (*reservationResult, error) {
 
 	c := class{program: program, time: t}
 
-	return &reservationResult{status: s, url: url, class: c}, nil
+	return &reservationResult{status: s, class: c}, nil
 }
 
 // TODO: Error handling?
