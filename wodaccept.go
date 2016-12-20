@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -16,145 +17,130 @@ import (
 	"time"
 
 	"github.com/antchfx/xquery/html"
+	"github.com/bdenning/go-pushover"
 	"github.com/radovskyb/watcher"
 	"golang.org/x/net/html"
 )
 
-const (
-	brokenLineRegexp = `.*=[^3D].*`
-	subjRegexp       = `The .* class is open for reservation`
-	urlRegexp        = `.*(http://mandrillapp.*)">Accept.*`
-	classInfoRegexp  = `Date:\xa0+(\d{2}), (.*) (\d{4})Start time:\xa0+(.*) at (.*)End.*Program:\xa0+(.*)Location.*`
+// const
+var (
+	subjectSubstring   = "open for reservation"
+	urlRegexp          = regexp.MustCompile(`.*(http://mandrillapp.*)">Accept.*`)
+	classDetailsRegexp = regexp.MustCompile(`Date:\xa0+(\d{2}), (.*) (\d{4})Start time:\xa0+(.*) at (.*)End.*Program:\xa0+(.*)Location.*`)
 
-	title   = "//div[@id='W_Theme_UI_wt12_block_wtTitle']"
-	content = "//div[@id='W_Theme_UI_wt12_block_wtMainContent']"
+	title   = "//div[@id='AthleteTheme_wt12_block_wtTitle']"
+	content = "//div[@id='AthleteTheme_wt12_block_wtMainContent']"
+
+	timeFormat = "Monday, January 2, 2006, 15:04"
 )
 
-func checkSubject(h mail.Header) (bool, error) {
-	s := h.Get("Subject")
-	m, err := regexp.MatchString(subjRegexp, s)
-	if err != nil {
-		return false, err
-	}
-	return m, err
+var pushoverUser, pushoverToken string
+
+type class struct {
+	program string
+	time    time.Time
 }
 
-func fixBody(r io.Reader) (io.Reader, error) {
-	b, err := ioutil.ReadAll(r)
+type reservationResult struct {
+	status, url string
+	class       class
+}
+
+func readMessage(f string) (*mail.Message, error) {
+	message, err := ioutil.ReadFile(f)
 	if err != nil {
 		return nil, err
 	}
 
-	lines := strings.Split(string(b), "\n")
-	for i, line := range lines {
-		match, err := regexp.MatchString(brokenLineRegexp, line)
-		if err != nil {
-			return nil, err
-		}
-		if match {
-			lines[i] = "FOO"
-		}
-	}
-
-	output := strings.Join(lines, "\n")
-	return strings.NewReader(output), err
-}
-
-func decodeBody(r io.Reader) ([]byte, error) {
-	qr := quotedprintable.NewReader(r)
-	return ioutil.ReadAll(qr)
-}
-
-func findURL(b []byte) string {
-	lines := strings.Split(string(b), "\n")
-	r := regexp.MustCompile(urlRegexp)
-
-	var url string
-	for _, l := range lines {
-		m := r.FindStringSubmatch(l)
-		if m != nil {
-			url = m[1]
-		}
-	}
-	return url
-}
-
-func readEmail(f string) string {
-	msg, err := ioutil.ReadFile(f)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	r := bytes.NewReader(msg)
+	r := bytes.NewReader(message)
 	m, err := mail.ReadMessage(r)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
-	match, err := checkSubject(m.Header)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if !match {
-		return ""
-	}
-
-	b, err := fixBody(m.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	db, err := decodeBody(b)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	url := findURL(db)
-	if url != "" {
-		return url
-	}
-	return ""
+	return m, nil
 }
 
-func fetchURL(url string) string {
-	if url == "" {
-		return ""
+func isReservationOpenMessage(m mail.Message) bool {
+	return strings.Contains(m.Header.Get("Subject"), subjectSubstring)
+}
+
+func findURL(m mail.Message) (string, error) {
+	r := quotedprintable.NewReader(m.Body)
+	message, err := ioutil.ReadAll(r)
+	if err != nil {
+		return "", err
 	}
+
+	match := urlRegexp.FindSubmatch(message)
+	if match == nil {
+		return "", errors.New("URL not found")
+	}
+
+	return string(match[1]), nil
+}
+
+func fetchPage(url string) (io.ReadCloser, error) {
 	resp, err := http.Get(url)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	return string(body)
+
+	return resp.Body, nil
 }
 
-func parseHTML(body string) {
-	if body == "" {
-		return
+func acceptReservation(url string) (*reservationResult, error) {
+	page, err := fetchPage(url)
+	if err != nil {
+		return nil, err
 	}
-	root, _ := html.Parse(strings.NewReader(body))
-	status := htmlquery.FindOne(root, title)
-	info := htmlquery.FindOne(root, content)
 
-	r := regexp.MustCompile(classInfoRegexp)
-	m := r.FindStringSubmatch(htmlquery.InnerText(info))
-	if m == nil {
-		log.Println(htmlquery.InnerText(status))
-	} else {
-		day := m[1]
-		month := m[2]
-		year := m[3]
-		weekDay := m[4]
-		time := m[5]
-		class := m[6]
-		date := fmt.Sprintf("%s, %s %s, %s", weekDay, month, day, year)
-		log.Println(htmlquery.InnerText(status), time, date, class)
+	defer page.Close()
+
+	doc, err := html.Parse(page)
+	if err != nil {
+		return nil, err
 	}
+
+	statusNode := htmlquery.FindOne(doc, title)
+	if statusNode == nil {
+		return nil, errors.New("Class status node not found")
+	}
+
+	detailsNode := htmlquery.FindOne(doc, content)
+	if detailsNode == nil {
+		return nil, errors.New("Class details node not found")
+	}
+
+	s := htmlquery.InnerText(statusNode)
+
+	m := classDetailsRegexp.FindStringSubmatch(htmlquery.InnerText(detailsNode))
+	if m == nil {
+		return nil, errors.New("Class details not found")
+	}
+
+	day, month, year, weekDay, timeStr, program := m[1], m[2], m[3], m[4], m[5], m[6]
+	t, err := time.Parse(timeFormat, fmt.Sprintf("%s, %s %s, %s, %s", weekDay, month, day, year, timeStr))
+	if err != nil {
+		return nil, err
+	}
+
+	c := class{program: program, time: t}
+
+	return &reservationResult{status: s, url: url, class: c}, nil
+}
+
+// TODO: Error handling?
+func sendNotification(text string) {
+	m := pushover.NewMessage(pushoverToken, pushoverUser)
+	m.Push(text)
 }
 
 func main() {
 	watchDir := os.Args[1]
+	pushoverToken = os.Args[2]
+	pushoverUser = os.Args[3]
+
 	w := watcher.New()
 
 	go func() {
@@ -164,12 +150,41 @@ func main() {
 				if event.Op != watcher.Create {
 					continue
 				}
+
 				filePath := path.Join(watchDir, event.Name())
-				url := readEmail(filePath)
-				body := fetchURL(url)
-				parseHTML(body)
+				log.Println(filePath)
+
+				m, err := readMessage(filePath)
+				if err != nil {
+					log.Println(err)
+					sendNotification(err.Error())
+					continue
+				}
+
+				if !isReservationOpenMessage(*m) {
+					msg := "Not an 'open for reservation' message"
+					log.Println(msg)
+					sendNotification(msg)
+					continue
+				}
+
+				url, err := findURL(*m)
+				if err != nil {
+					log.Println(err)
+					sendNotification(err.Error())
+					continue
+				}
+
+				r, err := acceptReservation(url)
+				if err != nil {
+					log.Println(err)
+					sendNotification(fmt.Sprintf("%s\n%s", err.Error(), url))
+					continue
+				}
+				text := fmt.Sprintf("%s (%s, %s)", r.status, r.class.program, r.class.time)
+				sendNotification(text)
 			case err := <-w.Error:
-				log.Fatal(err)
+				log.Println(err)
 			}
 		}
 	}()
