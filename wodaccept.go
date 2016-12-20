@@ -182,6 +182,7 @@ func main() {
 					continue
 				}
 				text := fmt.Sprintf("%s (%s, %s)", r.status, r.class.program, r.class.time)
+				log.Println(text)
 				sendNotification(text)
 			case err := <-w.Error:
 				log.Println(err)
