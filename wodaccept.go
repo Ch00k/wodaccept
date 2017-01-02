@@ -130,10 +130,16 @@ func acceptReservation(url string) (*reservationResult, error) {
 	return &reservationResult{status: s, class: c}, nil
 }
 
-// TODO: Error handling?
 func sendNotification(text string) {
 	m := pushover.NewMessage(pushoverToken, pushoverUser)
-	m.Push(text)
+
+	log.Println("Sending notification")
+	r, err := m.Push(text)
+	if err != nil {
+		log.Println(err)
+	} else {
+		log.Printf("Notification sent. Response: %s", r)
+	}
 }
 
 func main() {
@@ -181,6 +187,7 @@ func main() {
 					sendNotification(fmt.Sprintf("%s\n%s", err.Error(), url))
 					continue
 				}
+
 				text := fmt.Sprintf("%s (%s, %s)", r.status, r.class.program, r.class.time)
 				log.Println(text)
 				sendNotification(text)
